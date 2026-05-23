@@ -1,7 +1,11 @@
 import sqlite3
 import re
+import os
+import threading
+import time
 from datetime import datetime, timedelta
 import pytz
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ConversationHandler,
@@ -10,24 +14,9 @@ from telegram.ext import (
 import warnings
 from telegram.warnings import PTBUserWarning
 warnings.filterwarnings("ignore", category=PTBUserWarning)
-from flask import Flask
-from threading import Thread
-
-app_flask = Flask('')
-
-@app_flask.route('/')
-def home():
-    return "I'm alive"
-
-def run():
-    app_flask.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "8804067266:AAGtThyM_bZQxuaSbyZh5Es5NJXzPU-PXL4"  # ваш токен
+TOKEN = "8804067266:AAGtThyM_bZQxuaSbyZh5Es5NJXzPU-PXL4"
 DB_FILE = "reminders.db"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
@@ -45,7 +34,7 @@ REPEAT_OPTIONS = {
 
 user_temp = {}
 
-# ---------- БАЗА ДАННЫХ (с авто-миграцией) ----------
+# ========== БАЗА ДАННЫХ ==========
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -59,7 +48,6 @@ def init_db():
                   repeat_type TEXT,
                   repeat_value INTEGER,
                   created_at TEXT)''')
-    # Добавляем колонку repeat_value, если её нет (миграция)
     c.execute("PRAGMA table_info(reminders)")
     columns = [col[1] for col in c.fetchall()]
     if "repeat_value" not in columns:
@@ -156,7 +144,7 @@ def delete_reminder_by_id(reminder_id):
     conn.commit()
     conn.close()
 
-# ---------- КАЛЕНДАРЬ ----------
+# ========== КАЛЕНДАРЬ ==========
 def get_calendar_keyboard(year, month):
     first_day = datetime(year, month, 1)
     start_weekday = first_day.weekday()
@@ -188,7 +176,7 @@ def get_calendar_keyboard(year, month):
     keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_add")])
     return InlineKeyboardMarkup(keyboard)
 
-# ---------- МЕНЮ ----------
+# ========== МЕНЮ ==========
 async def send_main_menu(chat_id, context, text="📌 Главное меню:"):
     keyboard = [
         [InlineKeyboardButton("➕ Добавить напоминание", callback_data="add")],
@@ -196,7 +184,7 @@ async def send_main_menu(chat_id, context, text="📌 Главное меню:")
     ]
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ---------- СТАРТ ----------
+# ========== СТАРТ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     name = get_user_name(user_id)
@@ -250,7 +238,6 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, year, month, day = data.split("_")
         user_temp[user_id]["date"] = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
         await query.edit_message_text(f"📅 Дата: {user_temp[user_id]['date']}\n\nТеперь введите время в формате ЧЧ:ММ (например, 14:30)\nИли выберите час из кнопок:")
-        # Отправляем клавиатуру с часами
         kb = []
         for h in range(0, 24, 3):
             kb.append([InlineKeyboardButton(f"{h:02d}:00", callback_data=f"hour_{h}")])
@@ -288,7 +275,6 @@ async def manual_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text("Ошибка, попробуйте ещё раз.")
         return DATE
-    # Переход к выбору повторения
     keyboard = [[InlineKeyboardButton(label, callback_data=f"rep_{key}")] for key, label in REPEAT_OPTIONS.items()]
     keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_add")])
     await update.message.reply_text("🔄 Как часто напоминать?", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -302,7 +288,6 @@ async def time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("hour_"):
         hour = data.split("_")[1]
         user_temp[user_id]["hour"] = hour
-        # Предлагаем выбор минут или ручной ввод
         kb = [
             [InlineKeyboardButton("00", callback_data=f"min_{hour}_00"),
              InlineKeyboardButton("15", callback_data=f"min_{hour}_15"),
@@ -324,7 +309,6 @@ async def time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Выберите дату:", reply_markup=get_calendar_keyboard(now.year, now.month))
             return DATE
         user_temp[user_id]["datetime"] = dt_msk.strftime("%Y-%m-%d %H:%M:%S")
-        # Переход к повторению
         keyboard = [[InlineKeyboardButton(label, callback_data=f"rep_{key}")] for key, label in REPEAT_OPTIONS.items()]
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_add")])
         await query.edit_message_text("🔄 Как часто напоминать?", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -383,7 +367,6 @@ async def repeat_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             user_temp[user_id]["repeat_type"] = rep_type
             user_temp[user_id]["repeat_value"] = None
-            # Показать выбор получателя
             users = get_all_users()
             keyboard = []
             current_name = get_user_name(user_id)
@@ -444,7 +427,7 @@ async def for_whom_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return FOR_WHOM
 
-# ---------- СПИСОК НАПОМИНАНИЙ ----------
+# ========== СПИСОК НАПОМИНАНИЙ ==========
 async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -481,7 +464,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_reply_markup(reply_markup=None)
     await send_main_menu(query.message.chat_id, context)
 
-# ---------- ОТПРАВКА НАПОМИНАНИЙ ----------
+# ========== ОТПРАВКА НАПОМИНАНИЙ ==========
 async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
     due = get_due_reminders()
     for rem_id, for_user_id, text, remind_time, repeat_type, repeat_val in due:
@@ -498,7 +481,7 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
             if next_time is None:
                 delete_reminder_by_id(rem_id)
 
-# ---------- ЗАПУСК ----------
+# ========== ЗАПУСК ==========
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
@@ -540,8 +523,23 @@ def main():
     else:
         print("Установите 'pip install python-telegram-bot[job-queue]'")
 
-    print("Бот запущен с календарём и ручным вводом времени")
+    # Запускаем бота
     app.run_polling()
 
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Бот работает!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host='0.0.0.0', port=port)
+
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+    # Запускаем бота в основном потоке
     main()
