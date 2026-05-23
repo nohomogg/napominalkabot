@@ -10,6 +10,21 @@ from telegram.ext import (
 import warnings
 from telegram.warnings import PTBUserWarning
 warnings.filterwarnings("ignore", category=PTBUserWarning)
+from flask import Flask
+from threading import Thread
+
+app_flask = Flask('')
+
+@app_flask.route('/')
+def home():
+    return "I'm alive"
+
+def run():
+    app_flask.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = "8804067266:AAGtThyM_bZQxuaSbyZh5Es5NJXzPU-PXL4"  # ваш токен
